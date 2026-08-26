@@ -58,6 +58,8 @@ python3 -m http.server 8000
 - Aircraft type lookups are throttled (top 20 aircraft per cycle) to be polite to the free hexdb.io service.
 - **How KDMW flights are identified:** live positions (`states/all`) don't include origin/destination. The app separately queries OpenSky's `flights/arrival` and `flights/departure` endpoints for KDMW over the last 24h, then cross-references those aircraft (by ICAO24 hex) against the live traffic. Matches are tagged as KDMW arrivals/departures with real airport codes; everything else is shown as area traffic.
 - **KDMW is a small GA field** with limited ADS-B receiver coverage, so there may be periods with **zero** recorded arrivals/departures — the "KDMW" tab will be empty then, while "All"/"Area" still show surrounding traffic.
+- **Proximity tagging:** because OpenSky only associates a plane with KDMW *after* a completed arrival/departure, aircraft currently **circling or in the pattern** won't appear in those records. To catch them, the app also tags any live aircraft within **12 nm of the field and below 6,000 ft** as `🔄 Local / pattern` traffic.
+- **Why FlightAware shows more aircraft:** FlightAware combines FAA data with a much denser private receiver network, so it sees traffic — especially low-altitude general aviation — that the free OpenSky network misses entirely. This is a fundamental data-source limitation, not an app bug. Independent comparisons have found OpenSky has notably less coverage than FlightAware/Flightradar24.
 - "Departure/Arrival" airports are only shown for KDMW-associated flights; for pure area traffic they display `—`.
 - If OpenSky is temporarily unreachable, the app keeps the last known data and shows a toast.
 

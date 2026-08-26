@@ -265,25 +265,66 @@ async function safeFetchArray(url) {
   }
 }
 
+// Proximity thresholds for tagging "local to KDMW" traffic
+const KDMW_LOCAL_RADIUS_NM = 12;    // within ~12 nm of the field
+const KDMW_LOCAL_MAX_ALT_FT = 6000; // and below 6,000 ft (pattern / approach / departure)
+
+// Great-circle distance in nautical miles
+function distanceNm(lat1, lon1, lat2, lon2) {
+  const R = 3440.065; // Earth radius in nm
+  const toRad = (d) => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 +
+            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 // Tag each live flight with KDMW association + route info
 function tagKdmw() {
   for (const f of flights) {
     const info = kdmwFlights[f.icao24.toLowerCase()];
     if (info) {
-      f.isKdmw = true;
+      // Confirmed via OpenSky arrival/departure records
+      f.isKdmw   = true;
       f.kdmwKind = info.kind;
       f.dep = info.dep;
       f.arr = info.arr;
-    } else {
-      f.isKdmw = false;
-      f.kdmwKind = null;
+      f.kdmwReason = 'record';
+      continue;
     }
+
+    // Fallback: aircraft physically near KDMW and low = likely local/pattern traffic
+    const distNm = distanceNm(f.lat, f.lon, AIRPORT.lat, AIRPORT.lon);
+    const low    = f.altFt === null || f.altFt <= KDMW_LOCAL_MAX_ALT_FT;
+    if (distNm <= KDMW_LOCAL_RADIUS_NM && low && !f.onGround) {
+      f.isKdmw   = true;
+      f.kdmwKind = 'local';
+      f.dep = AIRPORT.iata; // likely operating at/near the field
+      f.arr = AIRPORT.iata;
+      f.kdmwReason = 'proximity';
+      f.distNm = Math.round(distNm * 10) / 10;
+      continue;
+    }
+
+    f.isKdmw = false;
+    f.kdmwKind = null;
+    f.kdmwReason = null;
+    f.distNm = Math.round(distNm * 10) / 10;
   }
 }
 
 function updateKdmwCount() {
   const el = document.getElementById('kdmwCount');
   if (el) el.textContent = flights.filter(f => f.isKdmw).length;
+}
+
+// Human-readable KDMW tag for a flight
+function kdmwLabel(ac) {
+  if (ac.kdmwKind === 'departure') return '🛫 KDMW departure';
+  if (ac.kdmwKind === 'arrival')   return '🛬 KDMW arrival';
+  if (ac.kdmwKind === 'local')     return `🔄 Local / pattern (${ac.distNm} nm)`;
+  return 'KDMW';
 }
 
 // Turn ICAO airport code into a short display code
@@ -534,7 +575,7 @@ function makePopupHTML(ac) {
   return `
     <div class="popup-call">${ac.callsign}</div>
     <div class="popup-type">${ac.type} ${ac.reg && ac.reg !== 'N/A' && ac.reg !== '—' ? '· '+ac.reg : ''}</div>
-    ${ac.isKdmw ? `<div class="popup-kdmw">${ac.kdmwKind === 'departure' ? '🛫 Departed KDMW' : '🛬 Arriving KDMW'} · ${ac.dep} → ${ac.arr}</div>` : ''}
+    ${ac.isKdmw ? `<div class="popup-kdmw">${kdmwLabel(ac)}${ac.kdmwKind !== 'local' ? ' · '+ac.dep+' → '+ac.arr : ''}</div>` : ''}
     <div class="popup-grid">
       <span class="lbl">ALT</span><span class="val">${fmt(ac.altFt, 'ft')}</span>
       <span class="lbl">GND SPD</span><span class="val">${fmt(ac.gsKts, 'kts')}</span>
@@ -585,7 +626,7 @@ function renderFlightList(query = '') {
         <span class="fc-callsign">${ac.callsign}</span>
         <span class="fc-type">${ac.type}</span>
       </div>
-      ${ac.isKdmw ? `<div class="fc-kdmw-tag">${ac.kdmwKind === 'departure' ? '🛫 KDMW departure' : '🛬 KDMW arrival'}</div>` : ''}
+      ${ac.isKdmw ? `<div class="fc-kdmw-tag">${kdmwLabel(ac)}</div>` : ''}
       <div class="fc-route">
         <strong>${ac.dep}</strong>
         <span class="arrow">→</span>
@@ -642,7 +683,7 @@ function renderDetail(ac) {
     <div class="detail-header">
       <div class="detail-callsign">${ac.callsign}</div>
       <div class="detail-type-badge">${ac.type}</div>
-      ${ac.isKdmw ? `<div class="detail-kdmw-badge">${ac.kdmwKind === 'departure' ? '🛫 Departed KDMW' : '🛬 Arriving KDMW'}</div>` : ''}
+      ${ac.isKdmw ? `<div class="detail-kdmw-badge">${kdmwLabel(ac)}</div>` : ''}
       <div class="detail-icao">ICAO24: ${ac.icao24.toUpperCase()} &nbsp;|&nbsp; REG: ${ac.reg}</div>
     </div>
 
