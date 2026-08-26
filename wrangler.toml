@@ -1,0 +1,9 @@
+# Cloudflare Worker config for the KDMW AeroAPI proxy.
+# Deploy with:  wrangler deploy
+# Set your key:  wrangler secret put AEROAPI_KEY
+
+name = "kdmw-proxy"
+main = "worker.js"
+compatibility_date = "2024-11-01"
+
+# AEROAPI_KEY is set as a SECRET, not here — never commit your key.

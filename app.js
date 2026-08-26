@@ -6,6 +6,17 @@
 'use strict';
 
 // ── CONFIG ────────────────────────────────────────────────────
+const CONFIG = {
+  // ▼▼▼  PASTE YOUR CLOUDFLARE WORKER URL HERE to use FlightAware AeroAPI  ▼▼▼
+  // e.g. 'https://kdmw-proxy.yourname.workers.dev'
+  // Leave as '' to keep using the free OpenSky Network source.
+  WORKER_URL: '',
+  // ▲▲▲  See worker.js for the ~2-minute free deploy steps.  ▲▲▲
+};
+
+// Which data source is active
+function usingAeroApi() { return !!CONFIG.WORKER_URL; }
+
 const AIRPORT = {
   name:  'Carroll County Regional Airport',
   icao:  'KDMW',
@@ -218,6 +229,9 @@ function visibleFlights() {
 
 // ── KDMW ARRIVALS / DEPARTURES ────────────────────────────────
 async function fetchKdmwFlights() {
+  // AeroAPI already returns flights pre-associated with KDMW; skip this OpenSky-only step.
+  if (usingAeroApi()) return;
+
   const end   = Math.floor(Date.now() / 1000);
   const begin = end - KDMW_LOOKBACK_HOURS * 3600;
 
@@ -351,24 +365,26 @@ async function fetchFlights() {
   if (!hasLoadedOnce) setStatus('connecting', 'Fetching data…');
 
   try {
-    const data = await fetchWithFallback(OPENSKY_URL);
-    const states = data.states || [];
-
-    // Filter: must have lat/lon
-    const valid = states.filter(s => s[F.lat] !== null && s[F.lon] !== null);
-    flights = valid.map(parseState);
-    tagKdmw();            // mark which live aircraft are KDMW arrivals/departures
+    if (usingAeroApi()) {
+      flights = await fetchFlightsAeroApi();   // FlightAware — richer, already tagged
+    } else {
+      const data = await fetchWithFallback(OPENSKY_URL);
+      const states = data.states || [];
+      const valid = states.filter(s => s[F.lat] !== null && s[F.lon] !== null);
+      flights = valid.map(parseState);
+      tagKdmw();            // mark which live aircraft are KDMW arrivals/departures
+      // Type info only needed for OpenSky (AeroAPI already includes it)
+      enrichTypes(visibleFlights().slice(0, 8));
+    }
     updateKdmwCount();
 
     renderAll();
     consecutiveFailures = 0;
     hasLoadedOnce = true;
-    setStatus('ok', `${flights.length} aircraft — ${new Date().toLocaleTimeString()}`);
+    const src = usingAeroApi() ? 'FlightAware' : 'OpenSky';
+    setStatus('ok', `${flights.length} aircraft · ${src} · ${new Date().toLocaleTimeString()}`);
     document.getElementById('lastUpdate').textContent =
       `Updated ${new Date().toLocaleTimeString()}`;
-
-    // Enrich type info a few at a time (async, non-blocking, low volume)
-    enrichTypes(visibleFlights().slice(0, 8));
 
   } catch (err) {
     console.warn('Refresh failed:', err.message);
@@ -392,6 +408,82 @@ async function fetchFlights() {
   } finally {
     btn.classList.remove('spinning');
   }
+}
+
+// ── AEROAPI (FlightAware) via Cloudflare Worker ───────────────
+// Hits /airports/KDMW/flights which returns arrivals, departures and
+// enroute flights with aircraft type, route, and live position/speed.
+async function aeroApiGet(path, params = {}) {
+  const u = new URL(CONFIG.WORKER_URL);
+  u.searchParams.set('path', path);
+  for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
+  const res = await fetch(u.toString(), { headers: { 'Accept': 'application/json' } });
+  if (!res.ok) throw new Error(`AeroAPI HTTP ${res.status}`);
+  return res.json();
+}
+
+async function fetchFlightsAeroApi() {
+  const data = await aeroApiGet(`/airports/${AIRPORT.icao}/flights`, { max_pages: '1' });
+
+  const out = [];
+  const push = (arr, kind) => (arr || []).forEach(f => {
+    const parsed = parseAeroFlight(f, kind);
+    if (parsed) out.push(parsed);
+  });
+
+  // enroute/arrivals are inbound to KDMW; departures leave KDMW
+  push(data.arrivals,   'arrival');    // recently landed / arriving
+  push(data.departures, 'departure');  // recently departed
+  push(data.scheduled_arrivals,   'arrival');
+  push(data.scheduled_departures, 'departure');
+
+  // De-dup by fa_flight_id / icao24, prefer entries that have a live position
+  const byId = {};
+  for (const f of out) {
+    const key = f.icao24 || f.faId || f.callsign;
+    if (!byId[key] || (f.lat !== null && byId[key].lat === null)) byId[key] = f;
+  }
+  // Only keep flights we can actually place on the map
+  return Object.values(byId).filter(f => f.lat !== null && f.lon !== null);
+}
+
+function parseAeroFlight(f, kind) {
+  const pos = f.last_position || {};
+  const lat = pos.latitude  ?? null;
+  const lon = pos.longitude ?? null;
+
+  const callsign = (f.ident_icao || f.ident || f.callsign || f.fa_flight_id || 'N/A').trim();
+  const gs   = pos.groundspeed ?? f.groundspeed ?? null;      // knots
+  const altFt = pos.altitude != null ? pos.altitude * 100 : null; // AeroAPI altitude is in 100s of ft
+  const heading = pos.heading ?? 0;
+
+  const depCode = f.origin?.code_iata || f.origin?.code || f.origin?.code_icao;
+  const arrCode = f.destination?.code_iata || f.destination?.code || f.destination?.code_icao;
+
+  return {
+    icao24:   (f.aircraft_registration || f.fa_flight_id || callsign).toLowerCase(),
+    faId:     f.fa_flight_id || null,
+    callsign,
+    origin:   f.origin?.name || depCode || '??',
+    lat, lon,
+    altFt:    altFt != null ? Math.round(altFt) : null,
+    speedKts: gs != null ? Math.round(gs) : null,
+    gsKts:    gs != null ? Math.round(gs) : null,
+    heading:  Math.round(heading),
+    vertRate: 0,
+    vertLabel:'LVL',
+    vertClass:'vr-level',
+    onGround: !!f.on_ground,
+    squawk:   f.squawk || '----',
+    type:     f.aircraft_type || 'N/A',
+    reg:      f.aircraft_registration || 'N/A',
+    dep:      depCode ? airportCode(depCode) : '—',
+    arr:      arrCode ? airportCode(arrCode) : '—',
+    isKdmw:   true,                        // everything from this endpoint is a KDMW flight
+    kdmwKind: kind,
+    kdmwReason: 'aeroapi',
+    distNm:   lat != null ? Math.round(distanceNm(lat, lon, AIRPORT.lat, AIRPORT.lon) * 10) / 10 : null,
+  };
 }
 
 // ── FETCH WITH CORS FALLBACK ──────────────────────────────────
@@ -614,11 +706,16 @@ function renderFlightList(query = '') {
     : base;
 
   if (filtered.length === 0) {
-    const msg = query
-      ? 'No matches for "'+query+'"'
-      : (viewFilter === 'kdmw'
-          ? 'No live KDMW arrivals/departures right now. Try "Area" or "All".'
-          : 'No aircraft in range');
+    let msg;
+    if (query) {
+      msg = 'No matches for "' + query + '"';
+    } else if (viewFilter === 'area' && usingAeroApi()) {
+      msg = 'FlightAware mode shows KDMW flights only. Use "All" or "KDMW".';
+    } else if (viewFilter === 'kdmw') {
+      msg = 'No live KDMW arrivals/departures right now. Try "All".';
+    } else {
+      msg = 'No aircraft to show right now.';
+    }
     list.innerHTML = `<div class="empty-state">
       <i class="fa-solid fa-satellite-dish fa-2x"></i>
       <p>${msg}</p>

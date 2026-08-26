@@ -2,7 +2,9 @@
 
 A real-time flight tracking web app centered on **Carroll County Regional Airport / Jack B Poage Field (KDMW)** in Westminster, Maryland.
 
-![Aviation dark-mode UI](https://img.shields.io/badge/UI-Aviation%20Dark-00c8ff)
+![Aviation light-mode UI](https://img.shields.io/badge/UI-Aviation%20Light-0077cc)
+
+It supports **two data sources**: the free OpenSky Network (default, no setup) or **FlightAware AeroAPI** (far better coverage, needs a free key + a tiny serverless proxy — see below).
 
 ## Features
 
@@ -25,9 +27,32 @@ A real-time flight tracking web app centered on **Carroll County Regional Airpor
 
 | Data | Source | Auth |
 |------|--------|------|
-| Live aircraft state vectors | [OpenSky Network REST API](https://openskynetwork.github.io/opensky-api/rest.html) | None (anonymous, 10s+ rate limit) |
-| Aircraft type & registration | [hexdb.io](https://hexdb.io) | None |
+| Live aircraft (default) | [OpenSky Network REST API](https://openskynetwork.github.io/opensky-api/rest.html) | None (anonymous, rate-limited) |
+| Live aircraft (optional, better) | [FlightAware AeroAPI](https://www.flightaware.com/commercial/aeroapi/) | API key (via Cloudflare Worker) |
+| Aircraft type & registration (OpenSky mode) | [hexdb.io](https://hexdb.io) | None |
 | Basemap tiles | OpenStreetMap / Esri World Imagery | None |
+
+## Using FlightAware AeroAPI (recommended for full coverage)
+
+OpenSky misses a lot of low-altitude general-aviation traffic around a small field like KDMW. FlightAware sees far more. Because an AeroAPI key is **secret and billable**, it must never live in the browser — so a tiny free **Cloudflare Worker** (`worker.js`) holds the key and relays requests:
+
+```
+browser  →  Cloudflare Worker (holds key)  →  FlightAware AeroAPI
+```
+
+**One-time setup (~5 min, free):**
+
+1. Create a free [Cloudflare account](https://dash.cloudflare.com/sign-up).
+2. Get an AeroAPI key: [FlightAware → My AeroAPI](https://www.flightaware.com/commercial/aeroapi/) (a free "Personal" tier is available).
+3. Install the CLI: `npm install -g wrangler`
+4. `wrangler login`
+5. From this folder: `wrangler deploy`
+6. Store your key as a **secret** (never in code): `wrangler secret put AEROAPI_KEY`
+7. Copy the deployed Worker URL and paste it into **`app.js` → `CONFIG.WORKER_URL`**, then push.
+
+When `WORKER_URL` is set, the app automatically switches to FlightAware; leave it blank to stay on OpenSky. Full steps are also commented at the top of `worker.js`.
+
+> **AeroAPI billing:** the free tier includes a monthly allowance, then charges per query. The Worker caches responses ~20s and the app refreshes every 60s to conserve quota. Keep an eye on your FlightAware usage dashboard.
 
 > **Note on ground speed:** OpenSky's ADS-B `velocity` field represents ground speed derived from the aircraft's velocity vector, so airspeed and ground speed are shown from the same source. True indicated airspeed is not broadcast over ADS-B.
 
@@ -67,8 +92,10 @@ python3 -m http.server 8000
 
 ```
 kdmw-tracker/
-├── index.html   # markup + layout
-├── style.css    # aviation dark-mode theme
-├── app.js       # map, data fetching, rendering logic
+├── index.html      # markup + layout
+├── style.css       # aviation light-mode theme
+├── app.js          # map, data fetching, rendering (OpenSky + AeroAPI)
+├── worker.js       # Cloudflare Worker proxy for FlightAware AeroAPI
+├── wrangler.toml   # Worker deploy config
 └── README.md
 ```
