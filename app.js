@@ -29,9 +29,13 @@ const OPENSKY_URL =
   `?lamin=${BBOX.lamin}&lomin=${BBOX.lomin}` +
   `&lamax=${BBOX.lamax}&lomax=${BBOX.lomax}`;
 
-// Optional CORS proxy fallback (used only if the direct fetch is blocked).
-// allorigins wraps the response, so we detect and unwrap it.
-const CORS_PROXY = 'https://api.allorigins.win/raw?url=';
+// CORS proxy fallbacks (tried in order if the direct browser fetch is blocked).
+// Each entry wraps a target URL. We try them one by one until one succeeds.
+const CORS_PROXIES = [
+  (url) => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+  (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  (url) => `https://thingproxy.freeboard.io/fetch/${url}`,
+];
 
 // Hexdb gives free aircraft type lookups by ICAO24 hex code
 const HEXDB_URL = (hex) => `https://hexdb.io/api/v1/aircraft/${hex}`;
@@ -202,27 +206,56 @@ async function fetchFlights() {
 
   } catch (err) {
     console.error(err);
-    setStatus('error', `Error: ${err.message}`);
-    showToast('⚠️ Could not reach OpenSky API — showing last data');
+    // OpenSky rate-limits anonymous users (HTTP 429). Give a helpful message.
+    const isRate = /429/.test(err.message);
+    setStatus('error', isRate ? 'Rate limited — retrying soon' : `Error: ${err.message}`);
+    showToast(
+      isRate
+        ? '⏳ OpenSky rate limit hit (anonymous access). It will retry automatically.'
+        : '⚠️ Could not reach the flight-data API. Retrying on next refresh…'
+    );
   } finally {
     btn.classList.remove('spinning');
   }
 }
 
 // ── FETCH WITH CORS FALLBACK ──────────────────────────────────
+// Tries a direct browser request first, then falls back through a list of
+// public CORS proxies. Returns parsed JSON, or throws if everything fails.
 async function fetchWithFallback(url) {
-  // 1) Try a direct browser request (OpenSky sends Access-Control-Allow-Origin: *)
-  try {
-    const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
-    if (res.ok) return await res.json();
-    throw new Error(`HTTP ${res.status}`);
-  } catch (directErr) {
-    console.warn('Direct fetch failed, trying CORS proxy…', directErr.message);
-    // 2) Fall back to a public CORS proxy
-    const res = await fetch(CORS_PROXY + encodeURIComponent(url));
-    if (!res.ok) throw new Error(`Proxy HTTP ${res.status}`);
-    return await res.json();
+  const attempts = [];
+
+  // 1) Direct request (OpenSky usually sends Access-Control-Allow-Origin: *)
+  attempts.push({ label: 'direct', url });
+
+  // 2) Each CORS proxy as a fallback
+  for (let i = 0; i < CORS_PROXIES.length; i++) {
+    attempts.push({ label: `proxy#${i + 1}`, url: CORS_PROXIES[i](url) });
   }
+
+  let lastErr;
+  for (const attempt of attempts) {
+    try {
+      const res = await fetch(attempt.url, {
+        headers: { 'Accept': 'application/json' },
+        // 15s timeout guard
+        signal: AbortSignal.timeout ? AbortSignal.timeout(15000) : undefined,
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+      // Some proxies return the payload as a string; parse defensively.
+      const data = JSON.parse(text);
+      if (attempt.label !== 'direct') {
+        console.info(`Fetched via ${attempt.label}`);
+      }
+      return data;
+    } catch (err) {
+      lastErr = err;
+      console.warn(`Fetch via ${attempt.label} failed:`, err.message);
+      // try next attempt
+    }
+  }
+  throw new Error(lastErr ? lastErr.message : 'All fetch attempts failed');
 }
 
 // ── PARSE STATE VECTOR ────────────────────────────────────────
