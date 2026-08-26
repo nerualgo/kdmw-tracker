@@ -23,7 +23,7 @@ const BBOX = {
   lomax: -74.50,   // lon max  (~150 nm east)
 };
 
-const REFRESH_INTERVAL = 30_000;      // 30 s — live positions
+const REFRESH_INTERVAL = 60_000;      // 60 s — stays within OpenSky anonymous rate limits
 const KDMW_REFRESH_INTERVAL = 300_000; // 5 min — KDMW arrivals/departures (changes slowly)
 const KDMW_LOOKBACK_HOURS = 24;        // how far back to look for KDMW flights
 
@@ -341,10 +341,14 @@ function resetCountdown() {
 }
 
 // ── DATA FETCH ────────────────────────────────────────────────
+let consecutiveFailures = 0;
+let hasLoadedOnce = false;
+
 async function fetchFlights() {
   const btn = document.getElementById('btnRefresh');
   btn.classList.add('spinning');
-  setStatus('connecting', 'Fetching data…');
+  // Only show "connecting" on the very first load — otherwise keep showing last-good status
+  if (!hasLoadedOnce) setStatus('connecting', 'Fetching data…');
 
   try {
     const data = await fetchWithFallback(OPENSKY_URL);
@@ -357,23 +361,34 @@ async function fetchFlights() {
     updateKdmwCount();
 
     renderAll();
+    consecutiveFailures = 0;
+    hasLoadedOnce = true;
     setStatus('ok', `${flights.length} aircraft — ${new Date().toLocaleTimeString()}`);
     document.getElementById('lastUpdate').textContent =
       `Updated ${new Date().toLocaleTimeString()}`;
 
-    // Enrich type info for visible aircraft (async, non-blocking)
-    enrichTypes(flights.slice(0, 20)); // top 20 to stay within free limits
+    // Enrich type info a few at a time (async, non-blocking, low volume)
+    enrichTypes(visibleFlights().slice(0, 8));
 
   } catch (err) {
-    console.error(err);
-    // OpenSky rate-limits anonymous users (HTTP 429). Give a helpful message.
+    console.warn('Refresh failed:', err.message);
+    consecutiveFailures++;
     const isRate = /429/.test(err.message);
-    setStatus('error', isRate ? 'Rate limited — retrying soon' : `Error: ${err.message}`);
-    showToast(
-      isRate
-        ? '⏳ OpenSky rate limit hit (anonymous access). It will retry automatically.'
-        : '⚠️ Could not reach the flight-data API. Retrying on next refresh…'
-    );
+
+    if (!hasLoadedOnce) {
+      // First load never succeeded — this is a real, visible error
+      setStatus('error', isRate ? 'Rate limited — retrying…' : 'Connecting…');
+      if (consecutiveFailures >= 2) {
+        showToast('⚠️ Trouble reaching the flight-data API. Still retrying…');
+      }
+    } else {
+      // We already have data on screen — fail quietly, keep showing it
+      setStatus('ok', `${flights.length} aircraft · last good ${new Date().toLocaleTimeString()} (retrying)`);
+      // Only warn if the feed has been down for several cycles in a row
+      if (consecutiveFailures === 4) {
+        showToast('⏳ Live feed is briefly unavailable — showing last known positions.');
+      }
+    }
   } finally {
     btn.classList.remove('spinning');
   }
