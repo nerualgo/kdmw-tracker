@@ -58,8 +58,20 @@
     <aside class="panel-left" id="panelLeft">
       <div class="panel-header">
         <i class="fa-solid fa-radar"></i>
-        <span>Aircraft in Range</span>
+        <span>Aircraft</span>
         <span class="badge" id="acCount">0</span>
+      </div>
+      <div class="filter-tabs">
+        <button class="filter-tab active" data-filter="all" title="All aircraft in the area">
+          <i class="fa-solid fa-globe"></i> All
+        </button>
+        <button class="filter-tab" data-filter="kdmw" title="Flights to/from KDMW">
+          <i class="fa-solid fa-plane-departure"></i> KDMW
+          <span class="tab-count" id="kdmwCount">0</span>
+        </button>
+        <button class="filter-tab" data-filter="area" title="Surrounding traffic only">
+          <i class="fa-solid fa-satellite-dish"></i> Area
+        </button>
       </div>
       <div class="search-wrap">
         <i class="fa-solid fa-magnifying-glass"></i>

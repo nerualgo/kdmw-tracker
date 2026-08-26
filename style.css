@@ -656,3 +656,92 @@ html, body {
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+
+/* ── FILTER TABS ─────────────────────────────────────────── */
+.filter-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.filter-tab {
+  flex: 1;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text-secondary);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .5px;
+  padding: 6px 4px;
+  cursor: pointer;
+  transition: all .15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.filter-tab i { font-size: 10px; }
+.filter-tab:hover { border-color: var(--border-bright); color: var(--text-primary); }
+.filter-tab.active {
+  background: var(--accent-glow);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.tab-count {
+  background: var(--amber);
+  color: #1a1000;
+  border-radius: 999px;
+  font-size: 9px;
+  font-family: var(--font-mono);
+  padding: 0 5px;
+  min-width: 16px;
+  text-align: center;
+  font-weight: 700;
+}
+
+/* ── KDMW HIGHLIGHT ──────────────────────────────────────── */
+.plane-icon.kdmw {
+  color: var(--amber);
+  filter: drop-shadow(0 0 6px var(--amber)) drop-shadow(0 0 2px #fff);
+}
+
+.flight-card.kdmw {
+  border-left: 3px solid var(--amber);
+  background: linear-gradient(90deg, rgba(255,171,64,.06), transparent);
+}
+.fc-kdmw-tag {
+  font-size: 10px;
+  color: var(--amber);
+  font-weight: 600;
+  letter-spacing: .5px;
+  margin-bottom: 4px;
+}
+
+.popup-kdmw {
+  background: rgba(255,171,64,.12);
+  border: 1px solid var(--amber);
+  border-radius: 5px;
+  color: var(--amber);
+  font-size: 11px;
+  padding: 3px 7px;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.detail-kdmw-badge {
+  display: inline-block;
+  margin-top: 6px;
+  margin-left: 6px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  background: rgba(255,171,64,.12);
+  border: 1px solid var(--amber);
+  font-size: 12px;
+  color: var(--amber);
+  font-weight: 600;
+}

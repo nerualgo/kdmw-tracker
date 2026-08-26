@@ -23,11 +23,21 @@ const BBOX = {
   lomax: -74.50,   // lon max  (~150 nm east)
 };
 
-const REFRESH_INTERVAL = 30_000;   // 30 s
+const REFRESH_INTERVAL = 30_000;      // 30 s — live positions
+const KDMW_REFRESH_INTERVAL = 300_000; // 5 min — KDMW arrivals/departures (changes slowly)
+const KDMW_LOOKBACK_HOURS = 24;        // how far back to look for KDMW flights
+
+const OPENSKY_BASE = 'https://opensky-network.org/api';
 const OPENSKY_URL =
-  `https://opensky-network.org/api/states/all` +
+  `${OPENSKY_BASE}/states/all` +
   `?lamin=${BBOX.lamin}&lomin=${BBOX.lomin}` +
   `&lamax=${BBOX.lamax}&lomax=${BBOX.lomax}`;
+
+// KDMW arrival/departure flight endpoints (return records with origin/dest airports)
+const kdmwArrivalsURL = (begin, end) =>
+  `${OPENSKY_BASE}/flights/arrival?airport=${AIRPORT.icao}&begin=${begin}&end=${end}`;
+const kdmwDeparturesURL = (begin, end) =>
+  `${OPENSKY_BASE}/flights/departure?airport=${AIRPORT.icao}&begin=${begin}&end=${end}`;
 
 // CORS proxy fallbacks (tried in order if the direct browser fetch is blocked).
 // Each entry wraps a target URL. We try them one by one until one succeeds.
@@ -54,17 +64,24 @@ const F = {
 let map, tileStreet, tileSatellite, airportMarker, rangeCircle;
 let markers   = {};          // icao24 → Leaflet marker
 let aircraftDB = {};         // icao24 → {type, reg, …} from hexdb cache
-let flights   = [];          // current filtered flight list
+let flights   = [];          // ALL current live aircraft (parsed)
 let selected  = null;        // currently selected icao24
 let countdownVal = REFRESH_INTERVAL / 1000;
-let countdownTimer, refreshTimer;
+let countdownTimer, refreshTimer, kdmwTimer;
+
+// KDMW flight association: icao24 → { dep, arr, kind: 'arrival'|'departure' }
+let kdmwFlights = {};
+// View filter: 'kdmw' | 'area' | 'all'
+let viewFilter = 'all';
 
 // ── INIT ──────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   initMap();
   initClock();
   initControls();
-  fetchFlights();
+  initFilterTabs();
+  fetchKdmwFlights();   // which aircraft are tied to KDMW
+  fetchFlights();       // live positions
   startAutoRefresh();
 });
 
@@ -171,10 +188,110 @@ function startAutoRefresh() {
     resetCountdown();
   }, REFRESH_INTERVAL);
 
+  // KDMW arrival/departure records change slowly — refresh less often
+  kdmwTimer = setInterval(fetchKdmwFlights, KDMW_REFRESH_INTERVAL);
+
   countdownTimer = setInterval(() => {
     countdownVal = Math.max(0, countdownVal - 1);
     document.getElementById('countdown').textContent = countdownVal;
   }, 1000);
+}
+
+// ── FILTER TABS ───────────────────────────────────────────────
+function initFilterTabs() {
+  document.querySelectorAll('.filter-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      viewFilter = tab.dataset.filter;
+      document.querySelectorAll('.filter-tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      renderAll();
+    });
+  });
+}
+
+// Returns the list of flights that should be visible given the current filter
+function visibleFlights() {
+  if (viewFilter === 'kdmw') return flights.filter(f => f.isKdmw);
+  if (viewFilter === 'area') return flights.filter(f => !f.isKdmw);
+  return flights;
+}
+
+// ── KDMW ARRIVALS / DEPARTURES ────────────────────────────────
+async function fetchKdmwFlights() {
+  const end   = Math.floor(Date.now() / 1000);
+  const begin = end - KDMW_LOOKBACK_HOURS * 3600;
+
+  const next = {};
+  try {
+    // Arrivals INTO KDMW  → this airport is the destination
+    const arr = await safeFetchArray(kdmwArrivalsURL(begin, end));
+    for (const f of arr) {
+      if (!f.icao24) continue;
+      next[f.icao24.toLowerCase()] = {
+        dep:  airportCode(f.estDepartureAirport),
+        arr:  AIRPORT.iata,
+        kind: 'arrival',
+      };
+    }
+    // Departures FROM KDMW → this airport is the origin
+    const dep = await safeFetchArray(kdmwDeparturesURL(begin, end));
+    for (const f of dep) {
+      if (!f.icao24) continue;
+      next[f.icao24.toLowerCase()] = {
+        dep:  AIRPORT.iata,
+        arr:  airportCode(f.estArrivalAirport),
+        kind: 'departure',
+      };
+    }
+    kdmwFlights = next;
+    console.info(`KDMW flights loaded: ${Object.keys(next).length} in last ${KDMW_LOOKBACK_HOURS}h`);
+    // Re-tag current live flights and re-render
+    if (flights.length) { tagKdmw(); renderAll(); }
+  } catch (err) {
+    // Non-fatal: a small field may have zero recorded flights (404) — that's OK.
+    console.warn('KDMW flights fetch:', err.message);
+  }
+  updateKdmwCount();
+}
+
+// OpenSky returns 404 (empty) when no flights found — treat that as [].
+async function safeFetchArray(url) {
+  try {
+    const data = await fetchWithFallback(url);
+    return Array.isArray(data) ? data : [];
+  } catch (err) {
+    if (/404/.test(err.message)) return [];
+    throw err;
+  }
+}
+
+// Tag each live flight with KDMW association + route info
+function tagKdmw() {
+  for (const f of flights) {
+    const info = kdmwFlights[f.icao24.toLowerCase()];
+    if (info) {
+      f.isKdmw = true;
+      f.kdmwKind = info.kind;
+      f.dep = info.dep;
+      f.arr = info.arr;
+    } else {
+      f.isKdmw = false;
+      f.kdmwKind = null;
+    }
+  }
+}
+
+function updateKdmwCount() {
+  const el = document.getElementById('kdmwCount');
+  if (el) el.textContent = flights.filter(f => f.isKdmw).length;
+}
+
+// Turn ICAO airport code into a short display code
+function airportCode(icao) {
+  if (!icao) return '???';
+  // US airports: strip leading K (KIAD → IAD) for readability
+  if (/^K[A-Z]{3}$/.test(icao)) return icao.slice(1);
+  return icao;
 }
 
 function resetCountdown() {
@@ -195,6 +312,8 @@ async function fetchFlights() {
     // Filter: must have lat/lon
     const valid = states.filter(s => s[F.lat] !== null && s[F.lon] !== null);
     flights = valid.map(parseState);
+    tagKdmw();            // mark which live aircraft are KDMW arrivals/departures
+    updateKdmwCount();
 
     renderAll();
     setStatus('ok', `${flights.length} aircraft — ${new Date().toLocaleTimeString()}`);
@@ -290,10 +409,12 @@ function parseState(s) {
     vertClass,
     onGround:  s[F.on_ground],
     squawk:    s[F.squawk] || '----',
-    type:      aircraftDB[s[F.icao24]]?.type  || '…',
-    reg:       aircraftDB[s[F.icao24]]?.reg   || '…',
-    dep:       aircraftDB[s[F.icao24]]?.dep   || '—',
-    arr:       aircraftDB[s[F.icao24]]?.arr   || '—',
+    type:      aircraftDB[s[F.icao24]]?.type  || '—',
+    reg:       aircraftDB[s[F.icao24]]?.reg   || '—',
+    dep:       '—',
+    arr:       '—',
+    isKdmw:    false,
+    kdmwKind:  null,
   };
 }
 
@@ -302,33 +423,37 @@ const enrichQueue = new Set();
 
 async function enrichTypes(list) {
   for (const ac of list) {
-    if (aircraftDB[ac.icao24]?.type && aircraftDB[ac.icao24].type !== '…') continue;
+    // Skip if we already resolved (or already tried) this aircraft
+    if (aircraftDB[ac.icao24]) continue;
     if (enrichQueue.has(ac.icao24)) continue;
     enrichQueue.add(ac.icao24);
 
+    let resolved = { type: 'N/A', reg: 'N/A' };
     try {
-      const res = await fetch(HEXDB_URL(ac.icao24));
-      if (res.ok) {
-        const d = await res.json();
-        aircraftDB[ac.icao24] = {
-          type: d.ICAOTypeCode || d.Type || 'N/A',
-          reg:  d.Registration || 'N/A',
-          dep:  '—',
-          arr:  '—',
-        };
-        // Patch the live flight object
-        const f = flights.find(x => x.icao24 === ac.icao24);
-        if (f) {
-          f.type = aircraftDB[ac.icao24].type;
-          f.reg  = aircraftDB[ac.icao24].reg;
-        }
-        // If this is the selected one, refresh detail
-        if (selected === ac.icao24) renderDetail(f || ac);
-      }
-    } catch (_) { /* silent */ }
+      // Use the same proxy-fallback fetcher so CORS doesn't block it
+      const d = await fetchWithFallback(HEXDB_URL(ac.icao24));
+      resolved = {
+        type: d.ICAOTypeCode || d.Type || d.Manufacturer || 'N/A',
+        reg:  d.Registration || 'N/A',
+      };
+    } catch (_) {
+      // Leave as N/A — never leave it stuck on "loading"
+    }
 
-    // Small delay to be polite to free API
-    await sleep(150);
+    // Cache result (even N/A) so we don't retry endlessly
+    aircraftDB[ac.icao24] = resolved;
+
+    // Patch the live flight object + refresh UI if needed
+    const f = flights.find(x => x.icao24 === ac.icao24);
+    if (f) {
+      f.type = resolved.type;
+      f.reg  = resolved.reg;
+      if (selected === ac.icao24) renderDetail(f);
+    }
+    // Refresh the list so type badges update live
+    renderFlightList(document.getElementById('searchInput').value.trim().toUpperCase());
+
+    await sleep(120); // be polite to the free API
   }
 }
 
@@ -339,14 +464,17 @@ function renderAll() {
   updateMarkers();
   renderFlightList(document.getElementById('searchInput').value.trim().toUpperCase());
   updateStats();
-  document.getElementById('acCount').textContent = flights.length;
+  const vis = visibleFlights();
+  document.getElementById('acCount').textContent = vis.length;
+  updateKdmwCount();
 }
 
 // ── MAP MARKERS ───────────────────────────────────────────────
 function updateMarkers() {
+  const vis = visibleFlights();
   const seen = new Set();
 
-  for (const ac of flights) {
+  for (const ac of vis) {
     seen.add(ac.icao24);
     if (markers[ac.icao24]) {
       // Update position + rotation
@@ -356,15 +484,15 @@ function updateMarkers() {
     } else {
       // Create marker
       const icon = makePlaneIcon(ac);
-      const m = L.marker([ac.lat, ac.lon], { icon, zIndexOffset: 0 })
+      const m = L.marker([ac.lat, ac.lon], { icon, zIndexOffset: ac.isKdmw ? 500 : 0 })
         .addTo(map)
-        .bindPopup(() => makePopupHTML(ac), { maxWidth: 220 });
+        .bindPopup(() => makePopupHTML(ac), { maxWidth: 240 });
       m.on('click', () => selectAircraft(ac.icao24));
       markers[ac.icao24] = m;
     }
   }
 
-  // Remove stale markers
+  // Remove markers not in the visible set (filtered out or gone)
   for (const [id, m] of Object.entries(markers)) {
     if (!seen.has(id)) {
       map.removeLayer(m);
@@ -384,7 +512,10 @@ function makePlaneIcon(ac) {
 }
 
 function planeIconHTML(ac) {
-  const cls = ac.onGround ? 'grounded' : (ac.icao24 === selected ? 'selected' : '');
+  let cls = '';
+  if (ac.icao24 === selected) cls = 'selected';
+  else if (ac.isKdmw)         cls = 'kdmw';
+  else if (ac.onGround)       cls = 'grounded';
   const rot = ac.heading || 0;
   return `<div class="plane-icon ${cls}" style="transform:rotate(${rot}deg)">
     <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22">
@@ -402,10 +533,11 @@ function updatePlaneIcon(marker, ac) {
 function makePopupHTML(ac) {
   return `
     <div class="popup-call">${ac.callsign}</div>
-    <div class="popup-type">${ac.type !== '…' ? ac.type : 'Type loading…'} ${ac.reg !== '…' ? '· '+ac.reg : ''}</div>
+    <div class="popup-type">${ac.type} ${ac.reg && ac.reg !== 'N/A' && ac.reg !== '—' ? '· '+ac.reg : ''}</div>
+    ${ac.isKdmw ? `<div class="popup-kdmw">${ac.kdmwKind === 'departure' ? '🛫 Departed KDMW' : '🛬 Arriving KDMW'} · ${ac.dep} → ${ac.arr}</div>` : ''}
     <div class="popup-grid">
       <span class="lbl">ALT</span><span class="val">${fmt(ac.altFt, 'ft')}</span>
-      <span class="lbl">SPD</span><span class="val">${fmt(ac.speedKts, 'kts')}</span>
+      <span class="lbl">GND SPD</span><span class="val">${fmt(ac.gsKts, 'kts')}</span>
       <span class="lbl">HDG</span><span class="val">${ac.heading}°</span>
       <span class="lbl">VERT</span><span class="val">${ac.vertLabel} ${ac.vertRate !== 0 ? ac.vertRate+' fpm' : ''}</span>
       <span class="lbl">SQWK</span><span class="val">${ac.squawk}</span>
@@ -416,36 +548,44 @@ function makePopupHTML(ac) {
 // ── FLIGHT LIST ───────────────────────────────────────────────
 function renderFlightList(query = '') {
   const list = document.getElementById('flightList');
+  let base = visibleFlights();
   const filtered = query
-    ? flights.filter(a =>
+    ? base.filter(a =>
         a.callsign.includes(query) ||
         (a.type && a.type.toUpperCase().includes(query)) ||
         (a.reg  && a.reg.toUpperCase().includes(query))
       )
-    : flights;
+    : base;
 
   if (filtered.length === 0) {
+    const msg = query
+      ? 'No matches for "'+query+'"'
+      : (viewFilter === 'kdmw'
+          ? 'No live KDMW arrivals/departures right now. Try "Area" or "All".'
+          : 'No aircraft in range');
     list.innerHTML = `<div class="empty-state">
       <i class="fa-solid fa-satellite-dish fa-2x"></i>
-      <p>${query ? 'No matches for "'+query+'"' : 'No aircraft in range'}</p>
+      <p>${msg}</p>
     </div>`;
     return;
   }
 
-  // Sort: selected first, then by altitude desc
+  // Sort: selected first, KDMW flights next, then by altitude desc
   const sorted = [...filtered].sort((a, b) => {
     if (a.icao24 === selected) return -1;
     if (b.icao24 === selected) return  1;
+    if (a.isKdmw !== b.isKdmw) return a.isKdmw ? -1 : 1;
     return (b.altFt || 0) - (a.altFt || 0);
   });
 
   list.innerHTML = sorted.map(ac => `
-    <div class="flight-card ${ac.icao24 === selected ? 'active' : ''}"
+    <div class="flight-card ${ac.icao24 === selected ? 'active' : ''} ${ac.isKdmw ? 'kdmw' : ''}"
          data-id="${ac.icao24}" onclick="selectAircraft('${ac.icao24}')">
       <div class="fc-top">
         <span class="fc-callsign">${ac.callsign}</span>
         <span class="fc-type">${ac.type}</span>
       </div>
+      ${ac.isKdmw ? `<div class="fc-kdmw-tag">${ac.kdmwKind === 'departure' ? '🛫 KDMW departure' : '🛬 KDMW arrival'}</div>` : ''}
       <div class="fc-route">
         <strong>${ac.dep}</strong>
         <span class="arrow">→</span>
@@ -501,7 +641,8 @@ function renderDetail(ac) {
   panel.innerHTML = `
     <div class="detail-header">
       <div class="detail-callsign">${ac.callsign}</div>
-      <div class="detail-type-badge">${ac.type !== '…' ? ac.type : '⌛ Loading type…'}</div>
+      <div class="detail-type-badge">${ac.type}</div>
+      ${ac.isKdmw ? `<div class="detail-kdmw-badge">${ac.kdmwKind === 'departure' ? '🛫 Departed KDMW' : '🛬 Arriving KDMW'}</div>` : ''}
       <div class="detail-icao">ICAO24: ${ac.icao24.toUpperCase()} &nbsp;|&nbsp; REG: ${ac.reg}</div>
     </div>
 
@@ -591,13 +732,14 @@ function renderDetail(ac) {
 
 // ── STATS ─────────────────────────────────────────────────────
 function updateStats() {
-  const climbing   = flights.filter(f => f.vertRate >  100).length;
-  const descending = flights.filter(f => f.vertRate < -100).length;
-  const level      = flights.length - climbing - descending;
-  const maxSpd     = flights.reduce((m, f) => Math.max(m, f.speedKts || 0), 0);
-  const maxAlt     = flights.reduce((m, f) => Math.max(m, f.altFt   || 0), 0);
+  const vis        = visibleFlights();
+  const climbing   = vis.filter(f => f.vertRate >  100).length;
+  const descending = vis.filter(f => f.vertRate < -100).length;
+  const level      = vis.length - climbing - descending;
+  const maxSpd     = vis.reduce((m, f) => Math.max(m, f.speedKts || 0), 0);
+  const maxAlt     = vis.reduce((m, f) => Math.max(m, f.altFt   || 0), 0);
 
-  document.getElementById('statTotal').textContent     = flights.length;
+  document.getElementById('statTotal').textContent     = vis.length;
   document.getElementById('statClimbing').textContent  = climbing;
   document.getElementById('statDescending').textContent= descending;
   document.getElementById('statLevel').textContent     = level;
