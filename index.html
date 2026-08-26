@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KDMW Flight Tracker — Carroll County Regional Airport</title>
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <!-- Font Awesome -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
+  <!-- Google Fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ── TOP NAV ────────────────────────────────────────────── -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="logo">
+        <i class="fa-solid fa-tower-control"></i>
+        <span class="logo-main">KDMW</span>
+        <span class="logo-sub">Carroll County Regional Airport</span>
+      </div>
+    </div>
+    <div class="topbar-center">
+      <div class="status-pill" id="statusPill">
+        <span class="pulse-dot"></span>
+        <span id="statusText">Connecting…</span>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <div class="clock-block">
+        <div class="clock-label">UTC</div>
+        <div class="clock-time" id="clockUTC">--:--:--</div>
+      </div>
+      <div class="clock-block">
+        <div class="clock-label">LOCAL</div>
+        <div class="clock-time" id="clockLocal">--:--:--</div>
+      </div>
+      <div class="refresh-block">
+        <button class="btn-refresh" id="btnRefresh" title="Refresh Now">
+          <i class="fa-solid fa-rotate"></i>
+        </button>
+        <div class="next-refresh">
+          Next in <span id="countdown">30</span>s
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── MAIN LAYOUT ────────────────────────────────────────── -->
+  <div class="layout">
+
+    <!-- LEFT PANEL: flight list -->
+    <aside class="panel-left" id="panelLeft">
+      <div class="panel-header">
+        <i class="fa-solid fa-radar"></i>
+        <span>Aircraft in Range</span>
+        <span class="badge" id="acCount">0</span>
+      </div>
+      <div class="search-wrap">
+        <i class="fa-solid fa-magnifying-glass"></i>
+        <input type="text" id="searchInput" placeholder="Search callsign or type…" />
+      </div>
+      <div class="flight-list" id="flightList">
+        <div class="empty-state">
+          <i class="fa-solid fa-satellite-dish fa-2x"></i>
+          <p>Scanning for aircraft…</p>
+        </div>
+      </div>
+      <div class="panel-footer">
+        <span>Radius: <strong>150 nm</strong> from KDMW</span>
+        <span id="lastUpdate">—</span>
+      </div>
+    </aside>
+
+    <!-- CENTER: map -->
+    <main class="map-wrap">
+      <div id="map"></div>
+
+      <!-- Map overlay controls -->
+      <div class="map-controls">
+        <button class="map-btn active" id="btnSatellite" title="Satellite">
+          <i class="fa-solid fa-earth-americas"></i>
+        </button>
+        <button class="map-btn" id="btnStreet" title="Street Map">
+          <i class="fa-solid fa-map"></i>
+        </button>
+        <button class="map-btn" id="btnCenter" title="Re-center on KDMW">
+          <i class="fa-solid fa-crosshairs"></i>
+        </button>
+      </div>
+
+      <!-- Stats bar along bottom of map -->
+      <div class="map-stats">
+        <div class="stat-item">
+          <i class="fa-solid fa-plane"></i>
+          <span id="statTotal">0</span>
+          <label>Aircraft</label>
+        </div>
+        <div class="stat-item">
+          <i class="fa-solid fa-arrow-up"></i>
+          <span id="statClimbing">0</span>
+          <label>Climbing</label>
+        </div>
+        <div class="stat-item">
+          <i class="fa-solid fa-arrow-down"></i>
+          <span id="statDescending">0</span>
+          <label>Descending</label>
+        </div>
+        <div class="stat-item">
+          <i class="fa-solid fa-minus"></i>
+          <span id="statLevel">0</span>
+          <label>Level</label>
+        </div>
+        <div class="stat-item">
+          <i class="fa-solid fa-gauge-high"></i>
+          <span id="statMaxSpeed">0</span>
+          <label>Max kts</label>
+        </div>
+        <div class="stat-item">
+          <i class="fa-solid fa-mountain"></i>
+          <span id="statMaxAlt">0</span>
+          <label>Max ft</label>
+        </div>
+      </div>
+    </main>
+
+    <!-- RIGHT PANEL: detail -->
+    <aside class="panel-right" id="panelRight">
+      <div class="panel-header">
+        <i class="fa-solid fa-circle-info"></i>
+        <span>Flight Detail</span>
+      </div>
+      <div id="detailContent" class="detail-empty">
+        <i class="fa-solid fa-plane-circle-question fa-3x"></i>
+        <p>Click an aircraft on the<br/>map or list to view details</p>
+      </div>
+    </aside>
+
+  </div>
+
+  <!-- ── TOAST ──────────────────────────────────────────────── -->
+  <div id="toast" class="toast hidden"></div>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
